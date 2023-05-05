@@ -63,7 +63,9 @@ import deepspeed
 parser = argparse.ArgumentParser(description='Trainable_SpecAugment', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--DEBUG',default= False,
                     help='whether or not to print error messages')
-parser.add_argument('--num_workers',default= 4,
+parser.add_argument('--batch_size',default= 32,
+                    help='default batch_size')
+parser.add_argument('--num_workers',default= 0,
                     help='number of workers to load the data')
 
 parser.add_argument('--num_epochs', type=int, default=200,
@@ -76,18 +78,33 @@ parser.add_argument('--node-id', type=int, default=0,
                     help='Unique ID to identify the current node/host')
 parser.add_argument('--num-gpus', type=int, default=4,
                     help='Number of GPUs in each node')
+parser.add_argument('--deepspeed_config',  default= "ComParE2022_VecNet/data/ds_config.json", help='deepspeed config')
+
 
 
 args = parser.parse_args()
+class Args:
+    deepspeed = True
+    deepspeed_config = "ComParE2022_VecNet/data/ds_config.json"
+    
+args_ds=Args()
+
+import os
+#os.environ["NCCL_DEBUG"] = "INFO"
+
 #short_audio=USE_SHORT_AUDIO
 args = parser.parse_args()
 WORLD_SIZE = args.num_gpus * args.num_nodes
 
 os.environ['MASTER_ADDR'] = 'localhost' 
-os.environ['MASTER_PORT'] = '9956' 
+os.environ['MASTER_PORT'] = '8575' 
 
 classes = ['an arabiensis','culex pipiens complex', 'ae aegypti','an funestus ss','an squamosus',
                'an coustani','ma uniformis','ma africanus' ]
+
+data_dir = os.path.join("ComParE2022_VecNet","data")
+deepspeed_config = os.path.join("ComParE2022_VecNet","data","deepspeed_config.json")
+
 
 def get_offsets_df(df, short_audio=False):
     audio_offsets = []
@@ -281,7 +298,7 @@ class Normalize_batch(nn.Module):
 # Subclass the pretrained model and make it a binary classification
 
 class MyModel(nn.Module):
-    def __init__(self, model_name, image_size,device):
+    def __init__(self, model_name, image_size):
         super().__init__()
         # num_classes=0 removes the pretrained head
         self.backbone = timm.create_model(model_name,
@@ -583,12 +600,23 @@ def worker(local_rank, args):
     from torch.nn.parallel import DistributedDataParallel as DDP
     warnings.filterwarnings("ignore")
     global_rank = args.node_id * args.num_gpus + local_rank 
-    #dist.init_process_group( backend='nccl', world_size=WORLD_SIZE, rank=global_rank ) 
-    deepspeed.init_distributed()
-
-
+    #deepspeed.init_distributed(world_size = 4 , dist_backend = "nccl",distributed_port=30500 , rank = local_rank)
+    dist.init_process_group( backend='nccl', world_size=WORLD_SIZE, rank=global_rank ) 
+    os.environ['LOCAL_RANK'] = str(local_rank)
+    #deepspeed.init_distributed(world_size = 4 , dist_backend = "nccl",distributed_port=30500 , rank = local_rank)
+    
+    args_init = {
+    "local_rank": 0,
+    "world_size": 4  
+     }
+    
+    
+    world = torch.distributed.get_world_size()
+    print("$$$$ world $$$ = ",world)
+    
     ## Code that was previously in main
-    pin_memory = args.pin_memory
+    pin_memory = True
+    batch_size = args.batch_size
     num_workers = args.num_workers
     num_epochs = args.num_epochs
     short_audio=args.USE_SHORT_AUDIO
@@ -597,7 +625,7 @@ def worker(local_rank, args):
     classes = ['an arabiensis','culex pipiens complex', 'ae aegypti','an funestus ss','an squamosus',
                'an coustani','ma uniformis','ma africanus' ]
     csv_loc = os.path.join("ComParE2022_VecNet","data","metadata","neurips_2021_zenodo_0_0_1.csv")
-    deepspeed_config = os.path.join("ComParE2022_VecNet","data","deepspeed_config.json")
+    
     df = prepare_df(classes = classes,csv_loc = csv_loc)
     plot_df(df)
     df_train ,df_val ,df_test = train_test_split(df)
@@ -623,13 +651,13 @@ def worker(local_rank, args):
     device = torch.device("cuda:" + str(local_rank) if torch.cuda.is_available() else "cpu")
     print("device = ",device)
     
-    model =MyModel('convnext_xlarge_in22k',224 , device)
+    model =MyModel('convnext_xlarge_in22k',224)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     min_length = (config.win_size * config.n_hop) / config.rate
     
-    train_dataset = MozDataset(df_train_offset,  config.data_dir, min_length)
-    val_dataset = MozDataset(df_val_offset,  config.data_dir, min_length)
-    test_dataset = MozDataset(df_test_offset,  config.data_dir, min_length)
+    train_dataset = MozDataset(df_train_offset,  data_dir, min_length)
+    val_dataset = MozDataset(df_val_offset,  data_dir, min_length)
+    test_dataset = MozDataset(df_test_offset,  data_dir, min_length)
 
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset,num_replicas=WORLD_SIZE,rank=global_rank)
@@ -640,11 +668,22 @@ def worker(local_rank, args):
     train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers,batch_size = batch_size, pin_memory=True,sampler = train_sampler )
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size,num_workers=num_workers, pin_memory=pin_memory, sampler = val_sampler)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size,num_workers= num_workers, pin_memory=pin_memory, sampler = test_sampler)
+    print("**************")
+    print("local_rank = ",local_rank)
+    print("**************")
+       
       
+    set_dev = "cuda:"+str(local_rank)
+    print("**************")
+    print("set_dev = ",set_dev)
+    print("**************")
     
-    model.to(device)
+    torch.cuda.set_device(set_dev)
+    model.to(f'cuda:{local_rank}')
     model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],find_unused_parameters=True)
-    model_engine, optimiser, _, _ = deepspeed.initialize(args=deepspeed_config, model=model,model_parameters=model.parameters())
+    
+    model_engine, optimiser, _, _ = deepspeed.initialize(args=args_ds, model=model,model_parameters=model.parameters())
+    
 
     #model = DDP(model, device_ids=[torch.cuda.device])
     #lr = .000015
@@ -670,7 +709,7 @@ def worker(local_rank, args):
     #(train_loader, val_loader,test_loader, model ,classes,class_weights,num_epochs,train_sampler,device )
     for e in range(num_epochs + cooldown_epoch):
         train_sampler.set_epoch(e)
-        train_f1,train_loss = train_model(train_loader, model_engine,classes,class_weights,train_sampler,device,e ,base_optimiser ,look_optimiser,scheduler )
+        train_f1,train_loss = train_model(train_loader, model_engine,classes,class_weights,train_sampler,local_rank,e ,base_optimiser ,look_optimiser,scheduler )
         dist.barrier()
         #averaging and reducing
         train_f1 = reduce_op(train_f1 , device)
