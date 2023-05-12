@@ -3,17 +3,12 @@ import os
 import pandas as pd
 import sys
 sys.path.insert(0, os.path.abspath('ComParE2022_VecNet/src'))
-import config ,config_pytorch
-#from evaluate import get_results
+import config,config_pytorch
 import numpy as np
 
-# Troubleshooting and visualisation
-# import IPython.display as ipd
-
-# humbug lib imports
 from sklearn.metrics import accuracy_score
-from sklearn.metrics import f1_score
-#from PyTorch import config_pytorch
+from sklearn.metrics import f1_score ,confusion_matrix, classification_report
+
 import math
 import pickle
 
@@ -22,18 +17,17 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import torch.optim as optim
-import numpy as np
 from datetime import datetime
 import time
-#import datetime
+
 
 import matplotlib
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, classification_report
-import sys
+
+
 
 from tqdm.notebook import tqdm
-# additional pytorch tools
+
 import random
 import torchaudio
 import torchaudio.transforms as AT
@@ -42,7 +36,6 @@ from torch.cuda.amp import autocast, GradScaler
 from timm.scheduler.cosine_lr import CosineLRScheduler
 import timm
 import timm.optim
-from timm.utils import NativeScaler
 from timm.models import model_parameters
 from glob import glob
 ## nnAudio
@@ -390,8 +383,7 @@ class MyModel(nn.Module):
 ### Test Model####
 #model, test_loader, criterion = nn.CrossEntropyLoss(), classes = classes ,device=device, call = "test"
 def test_model(model, loader, device,fp16,criterion, call = "val"):
-    print("device = " + str(device) + " call = " + str(call))
-    
+    #print("device = " + str(device) + " call = " + str(call))
     with torch.no_grad():
                 
         test_loss = 0.0
@@ -423,19 +415,22 @@ def test_model(model, loader, device,fp16,criterion, call = "val"):
               
         test_loss = test_loss/len(loader)
         test_f1 = f1_score(all_y.numpy(), all_y_pred.numpy(),average='weighted')
-        test_f1 = reduce_op(test_f1,device)
+        #print("**********")
+        #print("inside" +str(call) +"->loss =  " +str(test_loss) + "test_f1 = " + str(test_f1))
+        #print("**********")
+        #test_f1 = reduce_op(test_f1,device)
         #dist.all_reduce(torch.tensor(test_f1), op=dist.ReduceOp.AVG)
-        print("returning from test... test_f1 = ", test_f1)
+        #print("returning from test... test_f1 = ", test_f1)
  
     return test_loss, test_f1 , all_y,all_y_pred
 
 ## Train_model ####
 #train_loader, model,classes,class_weights,train_sampler,device
-def train_model(train_loader, model,classes,class_weights,device,e ,base_optimiser ,scheduler,fp16 ):
+def train_model(train_loader, model,classes,class_weights,device,e ,base_optimiser ,fp16 ):
     # Creates a GradScaler once at the beginning of training.
     torch.manual_seed(0)
     device = device
-    print(f'Training on {device}')    
+    #print(f'Training on {device}')    
     weights_adj = torch.tensor(class_weights).type(torch.float).to(device)
     criterion_1 = nn.CrossEntropyLoss(weight=weights_adj,label_smoothing=.1)
     criterion_2 = nn.CrossEntropyLoss(weight=weights_adj)
@@ -444,8 +439,7 @@ def train_model(train_loader, model,classes,class_weights,device,e ,base_optimis
     model.train()
     all_y = []
     all_y_pred = []
-    accumulation_steps = 8
-    
+        
     for batch_i, inputs in enumerate(train_loader):
         if batch_i % 200 == 0 and torch.distributed.get_rank() == 0:
             bat_time = time.time()
@@ -456,7 +450,7 @@ def train_model(train_loader, model,classes,class_weights,device,e ,base_optimis
         if fp16 :
             x = x.half()
             #y = y.half()
-        base_optimiser.zero_grad()
+        #base_optimiser.zero_grad()
         with autocast():
             y_pred = model(x,train = True)['prediction']
             preds = torch.argmax(y_pred, axis = 1)
@@ -472,6 +466,7 @@ def train_model(train_loader, model,classes,class_weights,device,e ,base_optimis
         y_pred_cpu = y_pred.cpu().detach()
         all_y_pred.append(preds.cpu().detach())
         model.backward(loss)
+        model.step()
         #torch.nn.utils.clip_grad_norm_(model.parameters(),error_if_nonfinite=False ,max_norm = 1.0 )
         
         del x
@@ -631,7 +626,7 @@ validate_split(df_test_offset ,df_val_offset)
 
 class_weights = get_class_weights(df_train_offset)
 #print("inside main. class_weigths type = ", type(class_weights))
-model =MyModel('convnext_xlarge_in22k',224)
+model_b =MyModel('convnext_xlarge_in22k',224)
 #model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 min_length = (config.win_size * config.n_hop) / config.rate
 
@@ -653,17 +648,17 @@ test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size,nu
 #model.to(device)
 #model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],find_unused_parameters=True)
 #model = DDP(model, device_ids=[torch.cuda.device])
-model_engine, optimizer, trainloader, __ = deepspeed.initialize(args=args, model= model, model_parameters= model.parameters(), training_data=train_dataset )
+model_engine, optimizer, trainloader, __ = deepspeed.initialize(args=args, model= model_b, model_parameters= model_b.parameters(), training_data=train_dataset )
 fp16 = True
 device = model_engine.local_rank
 
 
 
 
-lr = .000015
+lr = .0015
 base_optimiser = optimizer
 #look_optimiser = timm.optim.Lookahead(base_optimiser)
-scheduler = timm.scheduler.CosineLRScheduler(base_optimiser, t_initial= args.num_epochs,lr_min= lr/100,warmup_t = 5,warmup_lr_init= lr/10,noise_std=.075)
+#scheduler = timm.scheduler.CosineLRScheduler(base_optimiser, t_initial= args.num_epochs,lr_min= lr/100,warmup_t = 5,warmup_lr_init= lr/10,noise_std=.075)
 
 num_epochs = args.num_epochs
 cooldown_epoch = 50
@@ -682,7 +677,7 @@ all_train_f1 = []
 #(train_loader, val_loader,test_loader, model ,classes,class_weights,num_epochs,train_sampler,device )
 for e in range(num_epochs + cooldown_epoch):
     #train_sampler.set_epoch(e)
-    train_f1,train_loss = train_model(trainloader, model_engine,classes,class_weights,device,e ,base_optimiser ,scheduler , fp16)
+    train_f1,train_loss = train_model(trainloader, model_engine,classes,class_weights,device,e ,base_optimiser, fp16)
     dist.barrier()
     #averaging and reducing
     train_f1 = reduce_op(train_f1 , device)
@@ -694,6 +689,9 @@ for e in range(num_epochs + cooldown_epoch):
     dist.barrier()
     val_f1 = reduce_op(val_f1 , device)
     val_loss = reduce_op(val_loss , device)
+    #print("%%%%%%")
+    #print("post reduction " + "val_f1=  " + str(val_f1) + " val_loss = " +str(val_loss))
+    #print("%%%%%%")
 
     all_val_f1.append(val_f1)
     all_val_loss.append(val_loss)
@@ -701,7 +699,7 @@ for e in range(num_epochs + cooldown_epoch):
     acc_metric = val_f1
     best_acc_metric = best_val_f1
     if acc_metric > best_acc_metric: 
-        dist.barrier()
+        #dist.barrier()
         overrun_counter = -1
         checkpoint_name = f'model_e{e}_{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}'
         #model_engine.save_checkpoint(os.path.join(config.model_dir), checkpoint_name)
@@ -712,22 +710,25 @@ for e in range(num_epochs + cooldown_epoch):
         best_val_loss = val_loss
 
         #if torch.distributed.get_rank() == 0:
-        print("Better val_score .." + " train_f1 = " +str(train_f1) + "val _f1 = " +str(val_f1))
-        _, _ , all_y_test,all_y_pred_test = test_model(model, test_loader,device,fp16 ,criterion = nn.CrossEntropyLoss(), call = "test")
+        
+        _, _ , all_y_test,all_y_pred_test = test_model(model_engine, test_loader,device,fp16 ,criterion = nn.CrossEntropyLoss(), call = "test")
         #dist.barrier()
-        print("Device = " + str(device) + 'Epoch: %d, Train Loss: %.8f, Train f1: %.8f, Val Loss: %.8f, Val f1: %.8f, overrun_counter %i' % (e, train_loss/len(train_loader), train_f1, val_loss/len(val_loader), val_f1,  overrun_counter))
-        print('Saving model to:', os.path.join(config.model_dir,  checkpoint_name))
+        
         time.sleep(1)
         model_engine.save_checkpoint(os.path.join(config.model_dir), checkpoint_name)
         if torch.distributed.get_rank() == 0:
+            print("Better val_score .." + " train_f1 = " +str(train_f1) + "val _f1 = " +str(val_f1))
+            print("Device = " + str(device) + 'Epoch: %d, Train Loss: %.8f, Train f1: %.8f, Val Loss: %.8f, Val f1: %.8f, overrun_counter %i' % (e, train_loss/len(train_loader), train_f1, val_loss/len(val_loader), val_f1,  overrun_counter))
+            print('Saving model to:', os.path.join(config.model_dir,  checkpoint_name))
             print_result(all_y_test,all_y_pred_test, classes = classes)
 
 
     else:
-        print("on device..." +str(device) + "..Overrun....no improvement")
         overrun_counter += 1
-        print("device = " + str(device) +'Epoch: %d, Train Loss: %.8f, Train f1: %.8f, Val Loss: %.8f, Val f1: %.8f, overrun_counter %i' % (e, train_loss/len(train_loader), train_f1, val_loss/len(val_loader), val_f1,  overrun_counter))
-        print("current_time =",str(datetime.now()))
+        if torch.distributed.get_rank() == 0:
+            print("on device..." +str(device) + "..Overrun....no improvement")
+            print("device = " + str(device) +'Epoch: %d, Train Loss: %.8f, Train f1: %.8f, Val Loss: %.8f, Val f1: %.8f, overrun_counter %i' % (e, train_loss/len(train_loader), train_f1, val_loss/len(val_loader), val_f1,  overrun_counter))
+            print("current_time =",str(datetime.now()))
 
     
     if overrun_counter > config_pytorch.max_overrun:
@@ -735,7 +736,7 @@ for e in range(num_epochs + cooldown_epoch):
         break
 
         ### print classification report#######
-    scheduler.step(e + 1)
+    #scheduler.step(e + 1)
 print("Finished all epochs ALL DONE!!!!")
 
 # #
