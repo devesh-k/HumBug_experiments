@@ -2,7 +2,9 @@
 import os
 import pandas as pd
 import sys
-sys.path.insert(0, os.path.abspath('ComParE2022_VecNet/src'))
+#sys.path.append(0, os.path.abspath('ComParE2022_VecNet/src'))
+sys.path.append('/src')
+
 import config ,config_pytorch
 #from evaluate import get_results
 import numpy as np
